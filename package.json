@@ -1,0 +1,10 @@
+{
+  "name": "remote-desktop-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Public relay that bridges a browser to a personal remote-desktop agent over WSS.",
+  "main": "relay.js",
+  "engines": { "node": ">=18" },
+  "scripts": { "start": "node relay.js" },
+  "dependencies": { "ws": "^8.18.0" }
+}
