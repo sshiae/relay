@@ -5,95 +5,232 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Мой рабочий стол</title>
   <style>
-    :root { color-scheme: dark; }
+    :root {
+      color-scheme: dark;
+      --bg: #05080b; --panel: #0d141b; --panel2: #131c26; --line: #223040;
+      --text: #e6edf3; --muted: #8a99a8; --accent: #3b82f6; --accent2: #2563eb;
+      --ok: #2ea043; --okText: #7ee787; --warn: #f2a83b; --danger: #ff6b6b;
+      --radius: 12px;
+    }
     * { box-sizing: border-box; }
-    html, body { margin: 0; height: 100%; background: #05080b; color: #e6edf3;
-      font: 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+      font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden;
+      -webkit-tap-highlight-color: transparent; }
+    button { font-family: inherit; }
+
     #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
-    #screen { display: block; background: #000; cursor: none; touch-action: none;
+    #screen { display: block; background: #000; cursor: none; touch-action: none; outline: none;
       image-rendering: auto; box-shadow: 0 0 0 1px #1b2733; }
-    /* Top control bar (auto-hides) */
-    #bar {
-      position: fixed; top: 0; left: 0; right: 0; z-index: 10;
-      display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
-      padding: 8px 12px; background: rgba(10,15,20,.82); backdrop-filter: blur(8px);
-      border-bottom: 1px solid #1b2733; transition: transform .2s, opacity .2s;
+
+    /* ---- Always-visible HUD (status + menu button), top-left ---- */
+    #hud {
+      position: fixed; top: 10px; left: 10px; z-index: 30;
+      display: flex; align-items: center; gap: 8px;
+      background: rgba(13,20,27,.72); backdrop-filter: blur(10px);
+      border: 1px solid var(--line); border-radius: 999px;
+      padding: 5px 6px 5px 12px; box-shadow: 0 6px 24px rgba(0,0,0,.35);
+      transition: opacity .25s; max-width: calc(100vw - 20px);
     }
-    #bar.hidden { transform: translateY(-100%); opacity: 0; pointer-events: none; }
-    #bar .grp { display: flex; gap: 6px; align-items: center; }
-    #bar label { color: #8899a6; }
-    select, .btn, input[type=text] {
-      background: #0d141b; color: #e6edf3; border: 1px solid #2a3a4a;
-      border-radius: 8px; padding: 6px 10px; font-size: 13px; outline: none;
+    #hud.dim { opacity: .28; }
+    #hud:hover { opacity: 1; }
+    #dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none;
+      box-shadow: 0 0 0 0 rgba(0,0,0,0); transition: background .2s; }
+    #dot.ok { background: var(--ok); box-shadow: 0 0 10px 1px rgba(46,160,67,.7); }
+    #dot.warn { background: var(--warn); }
+    #dot.bad { background: var(--danger); }
+    #hudText { color: var(--text); font-size: 12.5px; white-space: nowrap; overflow: hidden;
+      text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+    #hudText small { color: var(--muted); }
+    #menuBtn {
+      flex: none; display: inline-flex; align-items: center; gap: 6px;
+      background: var(--accent2); color: #fff; border: 0; cursor: pointer;
+      border-radius: 999px; padding: 7px 13px; font-size: 13px; font-weight: 600;
     }
-    .btn { cursor: pointer; user-select: none; }
-    .btn:hover { border-color: #3b82f6; }
-    .btn.on { background: #16351f; border-color: #2ea043; color: #7ee787; }
-    input[type=range] { width: 110px; }
-    #sendText { width: 180px; }
-    #stats { color: #8899a6; font-variant-numeric: tabular-nums; margin-left: auto; }
-    a.link { color: #8899a6; text-decoration: none; }
-    a.link:hover { color: #e6edf3; }
-    /* Connection overlay */
+    #menuBtn:hover { background: #1d4ed8; }
+    #menuBtn .cog { font-size: 15px; line-height: 1; }
+    @media (max-width: 560px) { #menuBtn .lbl { display: none; } #menuBtn { padding: 8px 11px; } }
+
+    /* ---- Slide-in settings panel ---- */
+    #scrim { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.5);
+      opacity: 0; pointer-events: none; transition: opacity .22s; }
+    #scrim.show { opacity: 1; pointer-events: auto; }
+    #panel {
+      position: fixed; top: 0; right: 0; bottom: 0; z-index: 41;
+      width: min(360px, 100vw); background: var(--panel);
+      border-left: 1px solid var(--line); box-shadow: -20px 0 60px rgba(0,0,0,.5);
+      transform: translateX(105%); transition: transform .26s cubic-bezier(.4,0,.2,1);
+      display: flex; flex-direction: column; }
+    #panel.show { transform: translateX(0); }
+    .pHead { display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 18px; border-bottom: 1px solid var(--line); }
+    .pHead h2 { margin: 0; font-size: 15px; font-weight: 700; }
+    #closePanel { background: transparent; border: 0; color: var(--muted); cursor: pointer;
+      font-size: 22px; line-height: 1; padding: 4px 8px; border-radius: 8px; }
+    #closePanel:hover { color: var(--text); background: var(--panel2); }
+    .pBody { overflow-y: auto; padding: 8px 16px 20px; flex: 1; }
+    .sect { margin-top: 18px; }
+    .sect > .sTitle { font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+      color: var(--muted); margin: 0 0 10px 2px; }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 9px 0; }
+    .row + .row { border-top: 1px solid rgba(34,48,64,.55); }
+    .row label { color: var(--text); font-size: 14px; }
+    .row .val { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
+
+    select, input[type=text] {
+      background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+      border-radius: 10px; padding: 9px 11px; font-size: 14px; outline: none; width: 100%;
+    }
+    select:focus, input[type=text]:focus { border-color: var(--accent); }
+    input[type=range] { -webkit-appearance: none; appearance: none; width: 150px; height: 6px;
+      background: var(--line); border-radius: 999px; outline: none; }
+    input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px;
+      border-radius: 50%; background: var(--accent); cursor: pointer; border: 2px solid #0b1119; }
+    input[type=range]::-moz-range-thumb { width: 18px; height: 18px; border-radius: 50%;
+      background: var(--accent); cursor: pointer; border: 2px solid #0b1119; }
+
+    /* toggle pill */
+    .tog { position: relative; width: 46px; height: 26px; border-radius: 999px; border: 1px solid var(--line);
+      background: var(--panel2); cursor: pointer; flex: none; transition: background .18s, border-color .18s; }
+    .tog::after { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px;
+      border-radius: 50%; background: #6b7a89; transition: transform .18s, background .18s; }
+    .tog.on { background: rgba(46,160,67,.22); border-color: var(--ok); }
+    .tog.on::after { transform: translateX(20px); background: var(--okText); }
+    .tog.disabled { opacity: .4; cursor: not-allowed; }
+
+    .fullBtn { display: block; width: 100%; text-align: center; cursor: pointer;
+      background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+      border-radius: 10px; padding: 12px; font-size: 14px; font-weight: 600; margin-top: 8px; }
+    .fullBtn:hover { border-color: var(--accent); }
+    .fullBtn.danger { color: #ffd7d7; border-color: rgba(255,107,107,.35); background: rgba(255,107,107,.08); }
+    .fullBtn.danger:hover { border-color: var(--danger); }
+    .sendRow { display: flex; gap: 8px; margin-top: 4px; }
+    .sendRow .fullBtn { width: auto; margin: 0; padding: 10px 16px; flex: none; }
+
+    /* ---- Connection overlay ---- */
     #overlay {
-      position: fixed; inset: 0; z-index: 20; display: none; align-items: center; justify-content: center;
-      background: rgba(5,8,11,.9); flex-direction: column; gap: 14px; text-align: center; padding: 20px;
-    }
+      position: fixed; inset: 0; z-index: 50; display: none; align-items: center; justify-content: center;
+      background: rgba(5,8,11,.92); backdrop-filter: blur(3px); padding: 24px; }
     #overlay.show { display: flex; }
-    .spinner { width: 34px; height: 34px; border: 3px solid #223040; border-top-color: #3b82f6;
+    .ovCard { width: min(380px, 100%); text-align: center; display: flex; flex-direction: column;
+      align-items: center; gap: 14px; }
+    .spinner { width: 40px; height: 40px; border: 3px solid #223040; border-top-color: var(--accent);
       border-radius: 50%; animation: spin 1s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    #hint { position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%); z-index: 9;
-      background: rgba(10,15,20,.75); border: 1px solid #1b2733; border-radius: 999px;
-      padding: 6px 14px; color: #8899a6; transition: opacity .4s; }
+    #ovIcon { font-size: 40px; line-height: 1; }
+    #ovTitle { font-size: 18px; font-weight: 700; margin: 0; }
+    #ovText { color: var(--muted); font-size: 14px; margin: 0; max-width: 320px; }
+    .ovBtns { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 6px; }
+    .ovBtn { cursor: pointer; border-radius: 10px; padding: 11px 18px; font-size: 14px; font-weight: 600;
+      border: 1px solid var(--line); background: var(--panel2); color: var(--text); }
+    .ovBtn:hover { border-color: var(--accent); }
+    .ovBtn.primary { background: var(--accent2); border-color: var(--accent2); color: #fff; }
+    .ovBtn.primary:hover { background: #1d4ed8; }
+
+    #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%) translateY(20px);
+      z-index: 60; background: rgba(13,20,27,.95); border: 1px solid var(--line); border-radius: 999px;
+      padding: 9px 16px; color: var(--text); font-size: 13px; opacity: 0; pointer-events: none;
+      transition: opacity .3s, transform .3s; }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   </style>
 </head>
 <body>
-  <div id="bar" class="hidden">
-    <div class="grp">
-      <label>Монитор</label>
-      <select id="monitor"></select>
-    </div>
-    <div class="grp">
-      <label>Качество</label>
-      <input id="quality" type="range" min="1" max="10" value="7">
-    </div>
-    <div class="grp">
-      <label>Кадры/с</label>
-      <input id="fps" type="range" min="3" max="60" value="30">
-    </div>
-    <div class="grp">
-      <label>Чёткость</label>
-      <select id="maxWidth">
-        <option value="960">960p</option>
-        <option value="1280" selected>1280</option>
-        <option value="1600">1600</option>
-        <option value="1920">1920</option>
-        <option value="3840">Макс</option>
-      </select>
-    </div>
-    <div class="grp">
-      <span class="btn" id="turboBtn" title="H.264 — минимальная задержка/трафик. Выкл = MJPEG">⚡ Турбо</span>
-      <span class="btn on" id="curBtn" title="Мгновенный локальный курсор (без задержки)">🖱 Курсор</span>
-      <span class="btn on" id="kbdBtn" title="Захват клавиатуры">⌨ Клавиатура</span>
-      <span class="btn" id="fsBtn" title="Полный экран">⛶ Экран</span>
-    </div>
-    <div class="grp">
-      <input id="sendText" type="text" placeholder="ввести текст…" autocomplete="off">
-      <span class="btn" id="sendBtn">Ввести</span>
-    </div>
-    <div id="stats">—</div>
-    <a class="link" href="/logout">Выход</a>
+  <div id="stage"><canvas id="screen" width="1920" height="1080" tabindex="0"></canvas></div>
+
+  <!-- Always-visible status + menu button -->
+  <div id="hud">
+    <span id="dot"></span>
+    <span id="hudText">Подключение…</span>
+    <button id="menuBtn"><span class="cog">⚙</span><span class="lbl">Меню</span></button>
   </div>
 
-  <div id="stage"><canvas id="screen" width="1920" height="1080"></canvas></div>
+  <!-- Settings drawer -->
+  <div id="scrim"></div>
+  <aside id="panel" aria-label="Настройки">
+    <div class="pHead">
+      <h2>Настройки</h2>
+      <button id="closePanel" title="Закрыть">✕</button>
+    </div>
+    <div class="pBody">
+      <div class="sect">
+        <p class="sTitle">Экран</p>
+        <div class="row">
+          <label for="monitor">Монитор</label>
+          <select id="monitor" style="width:190px"></select>
+        </div>
+        <div class="row">
+          <label for="maxWidth">Чёткость</label>
+          <select id="maxWidth" style="width:150px">
+            <option value="960">960p</option>
+            <option value="1280" selected>1280p</option>
+            <option value="1600">1600p</option>
+            <option value="1920">1920p</option>
+            <option value="3840">Максимум</option>
+          </select>
+        </div>
+      </div>
 
-  <div id="hint">Наведите курсор вверх для настроек • Esc-меню держите бар открытым</div>
+      <div class="sect">
+        <p class="sTitle">Плавность</p>
+        <div class="row">
+          <label for="quality">Качество <span class="val" id="qualityVal">7</span></label>
+          <input id="quality" type="range" min="1" max="10" value="7">
+        </div>
+        <div class="row">
+          <label for="fps">Кадры/с <span class="val" id="fpsVal">30</span></label>
+          <input id="fps" type="range" min="3" max="60" value="30">
+        </div>
+      </div>
 
+      <div class="sect">
+        <p class="sTitle">Режим</p>
+        <div class="row">
+          <label>⚡ Турбо (H.264)<br><span class="val" style="font-size:12px">минимальная задержка и трафик</span></label>
+          <div class="tog on" id="turboBtn" role="switch"></div>
+        </div>
+        <div class="row">
+          <label>🖱 Локальный курсор<br><span class="val" style="font-size:12px">мгновенный, без задержки</span></label>
+          <div class="tog on" id="curBtn" role="switch"></div>
+        </div>
+        <div class="row">
+          <label>⌨ Захват клавиатуры<br><span class="val" style="font-size:12px">клавиши идут на компьютер</span></label>
+          <div class="tog on" id="kbdBtn" role="switch"></div>
+        </div>
+        <button class="fullBtn" id="fsBtn">⛶ Полный экран</button>
+      </div>
+
+      <div class="sect">
+        <p class="sTitle">Ввод текста</p>
+        <div class="sendRow">
+          <input id="sendText" type="text" placeholder="набрать текст на компьютере…" autocomplete="off">
+          <button class="fullBtn" id="sendBtn">Ввести</button>
+        </div>
+      </div>
+
+      <div class="sect">
+        <p class="sTitle">Действия</p>
+        <button class="fullBtn" id="reconnectBtn">↻ Переподключиться</button>
+        <button class="fullBtn danger" id="logoutBtn">⎋ Выйти</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Connection overlay -->
   <div id="overlay" class="show">
-    <div class="spinner"></div>
-    <div id="ovText">Подключение…</div>
+    <div class="ovCard">
+      <div class="spinner" id="ovSpinner"></div>
+      <div id="ovIcon" hidden></div>
+      <h1 id="ovTitle">Подключение…</h1>
+      <p id="ovText">Устанавливаем связь с компьютером.</p>
+      <div class="ovBtns">
+        <button class="ovBtn primary" id="ovReconnect">↻ Переподключиться</button>
+        <button class="ovBtn" id="ovReload">Обновить страницу</button>
+        <button class="ovBtn" id="ovLogout">Выйти</button>
+      </div>
+    </div>
   </div>
+
+  <div id="toast"></div>
 
   <script>
   (function () {
@@ -122,73 +259,197 @@
     const EXTENDED = new Set(['ArrowLeft','ArrowUp','ArrowRight','ArrowDown','Home','End',
       'PageUp','PageDown','Insert','Delete','NumpadDivide','NumpadEnter','ControlRight',
       'AltRight','PrintScreen','NumLock','ContextMenu']);
-    // Browser mouse button -> helper button (helper: 0=L 1=R 2=M)
     const BTN = { 0: 0, 1: 2, 2: 1 };
 
     // ---- Elements -----------------------------------------------------------
-    const canvas = document.getElementById('screen');
-    const ctx = canvas.getContext('2d', { alpha: false });
-    const stage = document.getElementById('stage');
-    const bar = document.getElementById('bar');
-    const overlay = document.getElementById('overlay');
-    const ovText = document.getElementById('ovText');
-    const statsEl = document.getElementById('stats');
-    const hint = document.getElementById('hint');
+    const $ = (id) => document.getElementById(id);
+    const canvas = $('screen'), ctx = canvas.getContext('2d', { alpha: false });
+    const stage = $('stage');
+    const hud = $('hud'), dot = $('dot'), hudText = $('hudText');
+    const panel = $('panel'), scrim = $('scrim'), menuBtn = $('menuBtn'), closePanel = $('closePanel');
+    const overlay = $('overlay'), ovSpinner = $('ovSpinner'), ovIcon = $('ovIcon'),
+          ovTitle = $('ovTitle'), ovText = $('ovText');
+    const toast = $('toast');
 
     // ---- State --------------------------------------------------------------
-    let ws = null, connected = false;
+    let ws = null, wsOpened = false;
+    let agentUp = null;          // null = unknown yet; true/false from relay
+    let streaming = false;       // at least one frame drawn this session
+    let manualClose = false;     // user logged out — stop reconnecting
+    let backoff = 1000, reconnectTimer = null;
+    let uiState = 'connecting';  // connecting | pc_offline | streaming | lost | auth
     let frameW = 1920, frameH = 1080;
     let pending = null, decoding = false;
     let controlEnabled = true;
-    let instantCursor = true;   // draw the cursor locally (instant) instead of via the video
+    let instantCursor = true;
+    let panelOpen = false;
+    let lastFrameAt = 0;
     const pressed = new Set();
 
-    // Codec: prefer H.264 via WebCodecs (delta frames = low latency / low data);
-    // fall back to MJPEG if the browser lacks WebCodecs or the decoder errors.
     const CAN_H264 = (typeof window.VideoDecoder === 'function') && (typeof window.EncodedVideoChunk === 'function');
     let codecMode = CAN_H264 ? 'h264' : 'mjpeg';
     let vdec = null, vdecCodec = null, gotKey = false, tsCounter = 0;
 
     const settings = { monitor: 0, quality: 7, fps: 30, maxWidth: 1280 };
     let lastRtt = null;
+    function wsReady() { return ws && ws.readyState === 1; }
     function applyCursor() { canvas.style.cursor = instantCursor ? 'default' : 'none'; }
+
+    // ---- UI: overlay + HUD rendering ---------------------------------------
+    // renderHud() runs every second (ping/fps). renderOverlay() runs only on a
+    // state change, so a longer hint (e.g. "unlock the PC") isn't clobbered.
+    function renderHud() {
+      let cls = 'warn', txt = 'Подключение…';
+      if (uiState === 'streaming') {
+        cls = 'ok';
+        const ping = lastRtt === null ? '—' : lastRtt + 'мс';
+        txt = 'Онлайн · ' + (codecMode === 'h264' ? 'H.264' : 'MJPEG') + ' · ' + ping;
+        hud.classList.add('dim');
+      } else {
+        hud.classList.remove('dim');
+        if (uiState === 'pc_offline') { cls = 'bad'; txt = 'Компьютер офлайн'; }
+        else if (uiState === 'lost') { cls = 'bad'; txt = 'Нет связи'; }
+        else if (uiState === 'auth') { cls = 'bad'; txt = 'Сессия истекла'; }
+      }
+      dot.className = cls;
+      hudText.textContent = txt;
+    }
+    function renderOverlay() {
+      if (uiState === 'streaming') { overlay.classList.remove('show'); return; }
+      overlay.classList.add('show');
+      const spin = (uiState !== 'auth');
+      ovSpinner.hidden = !spin; ovIcon.hidden = spin;
+      if (uiState === 'connecting') {
+        ovTitle.textContent = 'Подключение…';
+        ovText.textContent = 'Устанавливаем связь с компьютером.';
+      } else if (uiState === 'pc_offline') {
+        ovIcon.textContent = '💤';
+        ovTitle.textContent = 'Компьютер офлайн';
+        ovText.textContent = 'Ждём, пока компьютер выйдет в сеть. Как только он включится — подключение произойдёт автоматически.';
+      } else if (uiState === 'lost') {
+        ovTitle.textContent = 'Соединение потеряно';
+        ovText.textContent = 'Переподключаемся автоматически…';
+      } else if (uiState === 'auth') {
+        ovIcon.textContent = '🔒';
+        ovTitle.textContent = 'Сессия истекла';
+        ovText.textContent = 'Нужно войти заново.';
+      }
+    }
+    function setState(s) { uiState = s; renderOverlay(); renderHud(); }
+
+    let stuckTimer = null;
+    function armStuckHint() {
+      clearTimeout(stuckTimer);
+      stuckTimer = setTimeout(function () {
+        if (uiState === 'connecting' && agentUp === true && !streaming) {
+          ovText.textContent = 'Компьютер на связи, но изображения нет. Проверьте, что он включён и разблокирован (не на экране блокировки).';
+        }
+      }, 8000);
+    }
+
+    function showToast(msg) {
+      toast.textContent = msg; toast.classList.add('show');
+      clearTimeout(showToast._t); showToast._t = setTimeout(function () { toast.classList.remove('show'); }, 2200);
+    }
 
     // ---- WebSocket ----------------------------------------------------------
     function connect() {
+      clearTimeout(reconnectTimer); reconnectTimer = null;
+      manualClose = false;
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(proto + '//' + location.host + '/ws');
+      try { ws = new WebSocket(proto + '//' + location.host + '/ws'); }
+      catch (_) { scheduleReconnect(); return; }
       ws.binaryType = 'arraybuffer';
+      wsOpened = false;
+      if (!streaming) setState('connecting');
+
       ws.onopen = function () {
-        connected = true;
-        overlay.classList.remove('show');
-        resetH264();          // fresh stream: rebuild decoder on the next keyframe
-        pending = null;
-        pushSettings();
+        wsOpened = true; backoff = 1000;
+        resetH264(); pending = null;
+        // Agent status is unknown until the relay tells us (or a frame arrives).
+        // Against the local server directly there's no status msg, so a frame
+        // will flip us to streaming on its own.
+        if (agentUp === false) setState('pc_offline'); else setState('connecting');
+        armStuckHint();
+        pushSettings();  // harmless if the PC is offline (relay drops it)
       };
+
       ws.onmessage = function (e) {
         if (typeof e.data === 'string') {
-          try { const m = JSON.parse(e.data); if (m.t === 'pong') lastRtt = Math.round(performance.now() - m.ts); } catch (_) {}
+          let m; try { m = JSON.parse(e.data); } catch (_) { return; }
+          if (m.t === 'pong') { lastRtt = Math.round(performance.now() - m.ts); }
+          else if (m.t === 'relay') { onAgentStatus(!!m.agent); }
           return;
         }
         bytesWindow += e.data.byteLength || 0;
         const u8 = new Uint8Array(e.data);
         const tag = u8[0];
         const payload = u8.subarray(1);
-        if (tag === 0x4A) { pending = payload; if (!decoding) pump(); }          // JPEG
-        else if (tag === 0x4B || tag === 0x44) handleH264(payload, tag === 0x4B); // H.264 key/delta
+        if (tag === 0x4A) { pending = payload; if (!decoding) pump(); }
+        else if (tag === 0x4B || tag === 0x44) handleH264(payload, tag === 0x4B);
       };
+
       ws.onclose = function () {
-        connected = false;
-        overlay.classList.add('show');
-        ovText.textContent = 'Соединение потеряно. Переподключение…';
-        setTimeout(connect, 1000);
+        if (manualClose) return;
+        streaming = false;
+        if (!wsOpened) {
+          // Never reached "open": handshake failed (auth) or relay unreachable.
+          probeThenReconnect();
+        } else {
+          setState('lost');
+          scheduleReconnect();
+        }
       };
       ws.onerror = function () { try { ws.close(); } catch (_) {} };
     }
-    function send(obj) { if (connected && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+    function scheduleReconnect() {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, backoff);
+      backoff = Math.min(backoff * 2, 10000);
+    }
+
+    // Tell "session expired" (401) apart from "relay down"/"PC offline".
+    function probeThenReconnect() {
+      fetch('/status', { cache: 'no-store' }).then(function (r) {
+        if (r.status === 401) { setState('auth'); return; }  // stop; user must log in
+        return r.json().then(function (j) {
+          agentUp = !!(j && j.agent);
+          setState(agentUp ? 'connecting' : 'pc_offline');
+          scheduleReconnect();
+        });
+      }).catch(function () { setState('lost'); scheduleReconnect(); });
+    }
+
+    function onAgentStatus(up) {
+      const was = agentUp; agentUp = up;
+      if (up) {
+        if (!streaming) setState('connecting');
+        armStuckHint();
+        if (was === false) { resetH264(); pending = null; }
+        pushSettings();          // PC just (re)appeared: (re)send our settings
+      } else {
+        streaming = false;
+        setState('pc_offline');
+      }
+    }
+
+    function markStreaming() {
+      lastFrameAt = performance.now();
+      if (!streaming) { streaming = true; agentUp = true; setState('streaming'); }
+    }
+
+    function forceReconnect() {
+      showToast('Переподключение…');
+      backoff = 1000; agentUp = null; streaming = false;
+      try { if (ws) { ws.onclose = null; ws.close(); } } catch (_) {}
+      setState('connecting');
+      connect();
+    }
+    function doLogout() { manualClose = true; try { if (ws) ws.close(); } catch (_) {} location.href = '/logout'; }
+
+    function send(obj) { if (wsReady()) ws.send(JSON.stringify(obj)); }
     function pushSettings() {
-      // Any settings change restarts ffmpeg (a fresh H.264 stream), so drop the
-      // old decoder and rebuild it on the next keyframe.
       resetH264(); pending = null;
       send({ t: 'settings', monitor: settings.monitor, fps: settings.fps,
         quality: settings.quality, maxWidth: settings.maxWidth,
@@ -200,7 +461,6 @@
       if (vdec) { try { vdec.close(); } catch (_) {} }
       vdec = null; vdecCodec = null; gotKey = false;
     }
-    // Build the avc1.PPCCLL codec string from the SPS inside a keyframe.
     function spsCodec(u8) {
       let i = 0;
       while (i + 4 < u8.length) {
@@ -229,7 +489,7 @@
               canvas.width = frameW; canvas.height = frameH; fit();
             }
             ctx.drawImage(frame, 0, 0);
-            framesWindow++;
+            framesWindow++; markStreaming();
           } finally { frame.close(); }
         },
         error: function (e) { console.warn('VideoDecoder error:', e && e.message); fallbackToMjpeg(); },
@@ -244,10 +504,10 @@
       try {
         if (isKey) {
           const cs = spsCodec(payload);
-          if (cs && cs !== vdecCodec) makeDecoder(cs);   // (re)configure on new/changed SPS
+          if (cs && cs !== vdecCodec) makeDecoder(cs);
         }
         if (!vdec) return;
-        if (!gotKey) { if (!isKey) return; gotKey = true; }  // wait for the first keyframe
+        if (!gotKey) { if (!isKey) return; gotKey = true; }
         vdec.decode(new EncodedVideoChunk({
           type: isKey ? 'key' : 'delta',
           timestamp: (tsCounter += 1000),
@@ -260,8 +520,8 @@
       console.warn('falling back to MJPEG');
       codecMode = 'mjpeg';
       resetH264();
-      if (typeof turboBtn !== 'undefined' && turboBtn) { turboBtn.classList.remove('on'); turboBtn.textContent = '⚡ Турбо'; }
-      pushSettings();  // ask the server to switch to MJPEG
+      turboBtn.classList.remove('on');
+      pushSettings();
     }
 
     // ---- Rendering (always draws the most recent frame, drops the rest) -----
@@ -273,18 +533,17 @@
       createImageBitmap(new Blob([buf], { type: 'image/jpeg' })).then(function (bmp) {
         if (bmp.width !== frameW || bmp.height !== frameH) {
           frameW = bmp.width; frameH = bmp.height;
-          canvas.width = frameW; canvas.height = frameH;
-          fit();
+          canvas.width = frameW; canvas.height = frameH; fit();
         }
         ctx.drawImage(bmp, 0, 0);
         if (bmp.close) bmp.close();
-        framesWindow++;
+        framesWindow++; markStreaming();
         decoding = false;
         if (pending) pump();
       }).catch(function () { decoding = false; if (pending) pump(); });
     }
 
-    // ---- Fit canvas element to the stage, preserving aspect ratio -----------
+    // ---- Fit canvas to the stage, preserving aspect ratio -------------------
     function fit() {
       const availW = stage.clientWidth, availH = stage.clientHeight;
       const ar = frameW / frameH;
@@ -302,8 +561,6 @@
       const ny = (e.clientY - r.top) / r.height;
       return [Math.max(0, Math.min(1, nx)), Math.max(0, Math.min(1, ny))];
     }
-    // Send moves at up to ~120 Hz with a trailing flush — lower latency than a
-    // per-animation-frame batch, without flooding the socket.
     let pendingMove = null, lastMoveSent = 0, moveTimer = null;
     function flushMove() {
       moveTimer = null;
@@ -313,6 +570,7 @@
       lastMoveSent = performance.now();
     }
     canvas.addEventListener('pointermove', function (e) {
+      if (panelOpen) return;
       const [x, y] = normFromEvent(e);
       pendingMove = { x, y };
       const dt = performance.now() - lastMoveSent;
@@ -320,17 +578,20 @@
       else if (!moveTimer) moveTimer = setTimeout(flushMove, 8 - dt);
     });
     canvas.addEventListener('pointerdown', function (e) {
+      if (panelOpen) return;
       e.preventDefault();
       canvas.setPointerCapture(e.pointerId);
       const [x, y] = normFromEvent(e);
       send({ t: 'md', b: BTN[e.button] || 0, x, y });
     });
     canvas.addEventListener('pointerup', function (e) {
+      if (panelOpen) return;
       const [x, y] = normFromEvent(e);
       send({ t: 'mu', b: BTN[e.button] || 0, x, y });
     });
     canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
     canvas.addEventListener('wheel', function (e) {
+      if (panelOpen) return;
       e.preventDefault();
       const dy = e.deltaY ? -Math.sign(e.deltaY) * 120 : 0;
       const dx = e.deltaX ? Math.sign(e.deltaX) * 120 : 0;
@@ -340,7 +601,8 @@
     // ---- Keyboard -----------------------------------------------------------
     function isField(el) { return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable); }
     window.addEventListener('keydown', function (e) {
-      if (!controlEnabled || isField(document.activeElement)) return;
+      if (e.code === 'Escape' && panelOpen) { e.preventDefault(); closeMenu(); return; }
+      if (panelOpen || !controlEnabled || isField(document.activeElement)) return;
       const vk = VK[e.code];
       if (vk === undefined) return;
       e.preventDefault();
@@ -349,7 +611,7 @@
       send({ t: 'kd', vk, e: ext });
     });
     window.addEventListener('keyup', function (e) {
-      if (!controlEnabled || isField(document.activeElement)) return;
+      if (panelOpen || !controlEnabled || isField(document.activeElement)) return;
       const vk = VK[e.code];
       if (vk === undefined) return;
       e.preventDefault();
@@ -357,49 +619,80 @@
       pressed.delete(e.code);
       send({ t: 'ku', vk, e: ext });
     });
-    // Release everything if we lose focus, so no modifier gets stuck remotely.
     function releaseAll() {
-      pressed.forEach(function (code) {
-        send({ t: 'ku', vk: VK[code], e: EXTENDED.has(code) ? 1 : 0 });
-      });
+      pressed.forEach(function (code) { send({ t: 'ku', vk: VK[code], e: EXTENDED.has(code) ? 1 : 0 }); });
       pressed.clear();
     }
     window.addEventListener('blur', releaseAll);
     document.addEventListener('visibilitychange', function () { if (document.hidden) releaseAll(); });
 
-    // ---- Control bar behaviour ---------------------------------------------
-    let barPinned = false;
-    function showBar() { bar.classList.remove('hidden'); }
-    function hideBar() { if (!barPinned) bar.classList.add('hidden'); }
-    document.addEventListener('mousemove', function (e) {
-      if (e.clientY < 8) showBar();
-      else if (e.clientY > 90 && !bar.matches(':hover')) hideBar();
-    });
-    bar.addEventListener('mouseleave', hideBar);
+    // ---- Menu (drawer) ------------------------------------------------------
+    function openMenu() { panelOpen = true; panel.classList.add('show'); scrim.classList.add('show'); releaseAll(); }
+    function closeMenu() { panelOpen = false; panel.classList.remove('show'); scrim.classList.remove('show'); canvas.focus(); }
+    function toggleMenu() { panelOpen ? closeMenu() : openMenu(); }
+    menuBtn.addEventListener('click', toggleMenu);
+    closePanel.addEventListener('click', closeMenu);
+    scrim.addEventListener('click', closeMenu);
 
     // ---- Controls wiring ----------------------------------------------------
-    const monitorSel = document.getElementById('monitor');
-    const qualityEl = document.getElementById('quality');
-    const fpsEl = document.getElementById('fps');
-    const maxWidthEl = document.getElementById('maxWidth');
-    const turboBtn = document.getElementById('turboBtn');
-    const curBtn = document.getElementById('curBtn');
-    const kbdBtn = document.getElementById('kbdBtn');
-    const fsBtn = document.getElementById('fsBtn');
+    const monitorSel = $('monitor'), qualityEl = $('quality'), fpsEl = $('fps'), maxWidthEl = $('maxWidth');
+    const qualityVal = $('qualityVal'), fpsVal = $('fpsVal');
+    const turboBtn = $('turboBtn'), curBtn = $('curBtn'), kbdBtn = $('kbdBtn'), fsBtn = $('fsBtn');
+    const sendText = $('sendText'), sendBtn = $('sendBtn');
 
-    // Turbo (H.264) toggle — only if the browser supports WebCodecs.
-    if (!CAN_H264) { turboBtn.classList.add('off'); turboBtn.title = 'Браузер без WebCodecs — доступен только MJPEG'; turboBtn.style.opacity = '.5'; }
-    else { turboBtn.classList.toggle('on', codecMode === 'h264'); }
+    if (!CAN_H264) {
+      codecMode = 'mjpeg';
+      turboBtn.classList.remove('on'); turboBtn.classList.add('disabled');
+      turboBtn.title = 'Браузер без WebCodecs — доступен только MJPEG';
+    } else { turboBtn.classList.toggle('on', codecMode === 'h264'); }
+
     turboBtn.addEventListener('click', function () {
-      if (!CAN_H264) return;
+      if (!CAN_H264) { showToast('Турбо недоступно в этом браузере'); return; }
       codecMode = (codecMode === 'h264') ? 'mjpeg' : 'h264';
       turboBtn.classList.toggle('on', codecMode === 'h264');
-      resetH264(); pending = null;
+      resetH264(); pending = null; pushSettings();
+    });
+    curBtn.addEventListener('click', function () {
+      instantCursor = !instantCursor;
+      curBtn.classList.toggle('on', instantCursor);
+      applyCursor(); pushSettings();
+    });
+    kbdBtn.addEventListener('click', function () {
+      controlEnabled = !controlEnabled;
+      kbdBtn.classList.toggle('on', controlEnabled);
+      if (!controlEnabled) releaseAll();
+      showToast(controlEnabled ? 'Клавиатура включена' : 'Клавиатура выключена');
+    });
+    fsBtn.addEventListener('click', function () {
+      if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+      else document.exitFullscreen();
+    });
+
+    monitorSel.addEventListener('change', function () {
+      settings.monitor = monitorSel.value === 'all' ? 'all' : parseInt(monitorSel.value, 10);
       pushSettings();
     });
-    const sendText = document.getElementById('sendText');
-    const sendBtn = document.getElementById('sendBtn');
+    qualityEl.addEventListener('input', function () { qualityVal.textContent = qualityEl.value; });
+    qualityEl.addEventListener('change', function () { settings.quality = +qualityEl.value; pushSettings(); });
+    fpsEl.addEventListener('input', function () { fpsVal.textContent = fpsEl.value; });
+    fpsEl.addEventListener('change', function () { settings.fps = +fpsEl.value; pushSettings(); });
+    maxWidthEl.addEventListener('change', function () { settings.maxWidth = +maxWidthEl.value; pushSettings(); });
 
+    function doSendText() {
+      const t = sendText.value;
+      if (t) { send({ t: 'type', text: t }); sendText.value = ''; showToast('Текст отправлен'); }
+      closeMenu();
+    }
+    sendBtn.addEventListener('click', doSendText);
+    sendText.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.stopPropagation(); doSendText(); } });
+
+    $('reconnectBtn').addEventListener('click', function () { closeMenu(); forceReconnect(); });
+    $('logoutBtn').addEventListener('click', doLogout);
+    $('ovReconnect').addEventListener('click', forceReconnect);
+    $('ovReload').addEventListener('click', function () { location.reload(); });
+    $('ovLogout').addEventListener('click', doLogout);
+
+    // ---- Monitors list ------------------------------------------------------
     fetch('/config.json').then(function (r) { return r.json(); }).then(function (cfg) {
       (cfg.monitors || []).forEach(function (m) {
         const o = document.createElement('option');
@@ -414,58 +707,17 @@
       }
     }).catch(function () {});
 
-    monitorSel.addEventListener('change', function () {
-      settings.monitor = monitorSel.value === 'all' ? 'all' : parseInt(monitorSel.value, 10);
-      pushSettings();
-    });
-    qualityEl.addEventListener('change', function () { settings.quality = +qualityEl.value; pushSettings(); });
-    fpsEl.addEventListener('change', function () { settings.fps = +fpsEl.value; pushSettings(); });
-    maxWidthEl.addEventListener('change', function () { settings.maxWidth = +maxWidthEl.value; pushSettings(); });
-
-    curBtn.addEventListener('click', function () {
-      instantCursor = !instantCursor;
-      curBtn.classList.toggle('on', instantCursor);
-      curBtn.title = instantCursor ? 'Мгновенный локальный курсор (без задержки)'
-        : 'Показывать удалённый курсор из видео (с задержкой)';
-      applyCursor();
-      pushSettings();
-    });
-    kbdBtn.addEventListener('click', function () {
-      controlEnabled = !controlEnabled;
-      kbdBtn.classList.toggle('on', controlEnabled);
-      if (!controlEnabled) releaseAll();
-    });
-    fsBtn.addEventListener('click', function () {
-      if (!document.fullscreenElement) document.documentElement.requestFullscreen();
-      else document.exitFullscreen();
-    });
-    function doSendText() {
-      const t = sendText.value;
-      if (t) { send({ t: 'type', text: t }); sendText.value = ''; }
-      canvas.focus();
-    }
-    sendBtn.addEventListener('click', doSendText);
-    sendText.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.stopPropagation(); doSendText(); } });
-
-    // Keep bar visible while a control has focus.
-    bar.addEventListener('focusin', function () { barPinned = true; showBar(); });
-    bar.addEventListener('focusout', function () { barPinned = false; });
-
-    // ---- Stats --------------------------------------------------------------
+    // ---- Stats + heartbeat --------------------------------------------------
     setInterval(function () {
-      const kbps = Math.round(bytesWindow / 1024 * 8);
-      const ping = lastRtt === null ? '—' : lastRtt + ' ms';
-      statsEl.textContent = (codecMode === 'h264' ? 'H.264' : 'MJPEG') + ' · ' +
-        framesWindow + ' fps · ' + ping + ' пинг · ' + kbps + ' kbps · ' + frameW + '×' + frameH;
       framesWindow = 0; bytesWindow = 0;
-      if (connected && ws.readyState === 1) ws.send(JSON.stringify({ t: 'ping', ts: performance.now() }));
+      if (wsReady() && streaming) ws.send(JSON.stringify({ t: 'ping', ts: performance.now() }));
+      // If frames stop arriving while we think we're streaming, drop back.
+      if (streaming && performance.now() - lastFrameAt > 4000) { streaming = false; setState(agentUp === false ? 'pc_offline' : 'connecting'); }
+      renderHud();
     }, 1000);
-    setTimeout(function () { hint.style.opacity = '0'; }, 6000);
 
     // ---- Go -----------------------------------------------------------------
-    applyCursor();
-    fit();
-    connect();
+    applyCursor(); fit(); renderOverlay(); renderHud(); connect();
   })();
   </script>
 </body>

@@ -3,10 +3,10 @@
 /*
  * Public relay for the personal remote desktop.
  *
- * Deploy this on a free Node host (Render/Koyeb). It gives a permanent public
- * https/wss address. Your PC runs `agent.js`, which dials OUT to this relay
- * over ordinary TLS/443 (passes through your VPN), and the relay bridges each
- * browser to your PC.
+ * Deploy this on a free Node host (Amvera/Render/Koyeb). It gives a permanent
+ * public https/wss address. Your PC runs `agent.js`, which dials OUT to this
+ * relay over ordinary TLS/443 (passes through your VPN), and the relay bridges
+ * each browser to your PC.
  *
  *   [browser] --wss--> [relay] <--wss (outbound)-- [agent on PC] --> localhost:8765
  *
@@ -21,6 +21,10 @@
  *   op 2 CLOSE  (both)          viewer/local socket closed
  *   op 3 MSG    (both)          a message for that viewer (flags bit0: 1=text)
  *   op 4 CONFIG (agent->relay)  payload = /config.json contents to cache
+ *
+ * The relay also speaks ONE plain-text status message straight to each browser:
+ *   {"t":"relay","agent":true|false}   whether the PC is currently online.
+ * This lets the browser wait quietly for the PC instead of hammering reconnects.
  */
 
 const http = require('http');
@@ -32,7 +36,7 @@ const { WebSocketServer } = require('ws');
 const PORT = parseInt(process.env.PORT || '9000', 10);
 const PASSWORD = process.env.PASSWORD || '';
 const AGENT_KEY = process.env.AGENT_KEY || '';
-const SESSION_TTL_MS = 1000 * 60 * 60 * 12;
+const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 if (!PASSWORD || !AGENT_KEY) {
@@ -56,10 +60,28 @@ let cachedConfig = '{"monitors":[]}';
 const viewers = new Map();          // viewerId -> browser ws
 let nextViewerId = 1;
 
-// ---- sessions / auth (same scheme as the local server) --------------------
-const sessions = new Map();
-function newSession() { const t = crypto.randomBytes(32).toString('hex'); sessions.set(t, Date.now() + SESSION_TTL_MS); return t; }
-function validSession(t) { if (!t) return false; const e = sessions.get(t); if (!e) return false; if (Date.now() > e) { sessions.delete(t); return false; } return true; }
+// ---- sessions: stateless signed cookies (survive relay restarts) ----------
+// The old scheme kept sessions in a Map, so a container restart/sleep wiped
+// every login and left open browsers stuck reconnecting into 401s forever.
+// A signed token keyed off the (unchanged) env secrets survives restarts.
+const SESSION_SECRET = crypto.createHash('sha256').update('sess|' + PASSWORD + '|' + AGENT_KEY).digest();
+function b64u(buf) { return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function fromB64u(s) { return Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'), 'base64'); }
+function newSession() {
+  const payload = Buffer.from(String(Date.now() + SESSION_TTL_MS));
+  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest();
+  return b64u(payload) + '.' + b64u(sig);
+}
+function validSession(t) {
+  if (!t || typeof t !== 'string') return false;
+  const dot = t.indexOf('.'); if (dot < 1) return false;
+  let payload, sig;
+  try { payload = fromB64u(t.slice(0, dot)); sig = fromB64u(t.slice(dot + 1)); } catch (_) { return false; }
+  const want = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest();
+  if (sig.length !== want.length || !crypto.timingSafeEqual(sig, want)) return false;
+  const exp = parseInt(payload.toString('utf8'), 10);
+  return !!exp && Date.now() <= exp;
+}
 function parseCookies(req) {
   const out = {}; const h = req.headers.cookie; if (!h) return out;
   for (const p of h.split(';')) { const i = p.indexOf('='); if (i > 0) out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim()); }
@@ -82,6 +104,12 @@ function serveFile(res, file, type) {
   });
 }
 
+// ---- viewer status --------------------------------------------------------
+function agentOnline() { return !!(agentWs && agentWs.readyState === 1); }
+function statusMsg() { return JSON.stringify({ t: 'relay', agent: agentOnline() }); }
+function sendStatus(ws) { try { if (ws.readyState === 1) ws.send(statusMsg()); } catch (_) {} }
+function broadcastStatus() { const s = statusMsg(); for (const v of viewers.values()) { try { if (v.readyState === 1) v.send(s); } catch (_) {} } }
+
 // ---- HTTP -----------------------------------------------------------------
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
@@ -101,8 +129,15 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  if (u.pathname === '/logout') { if (cookies.sid) sessions.delete(cookies.sid); res.writeHead(302, { 'Set-Cookie': 'sid=; Path=/; Max-Age=0', 'Location': '/' }); res.end(); return; }
+  if (u.pathname === '/logout') { res.writeHead(302, { 'Set-Cookie': 'sid=; Path=/; Max-Age=0', 'Location': '/' }); res.end(); return; }
   if (u.pathname === '/healthz') { res.writeHead(200); res.end('ok'); return; }
+  // Lightweight probe the browser uses to tell "session expired" (401) apart
+  // from "PC offline"/"relay down"; also carries current PC online state.
+  if (u.pathname === '/status') {
+    if (!authed) { res.writeHead(401, { 'Cache-Control': 'no-store' }); res.end('{"auth":false}'); return; }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ auth: true, agent: agentOnline() })); return;
+  }
   if (u.pathname === '/config.json') {
     if (!authed) { res.writeHead(401); res.end('{}'); return; }
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(cachedConfig); return;
@@ -133,8 +168,13 @@ server.on('upgrade', (req, socket, head) => {
 
 function onAgent(ws) {
   if (agentWs) { try { agentWs.close(); } catch (_) {} }
-  agentWs = ws; ws.binaryType = 'nodebuffer';
-  console.log('[relay] agent connected');
+  agentWs = ws; ws.binaryType = 'nodebuffer'; ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+  console.log('[relay] agent connected;', viewers.size, 'viewer(s) waiting');
+  // Open a fresh local bridge for every browser that was already waiting, then
+  // tell those browsers the PC is back so they re-send settings and resume.
+  for (const id of viewers.keys()) ws.send(frameOpen(id));
+  broadcastStatus();
   ws.on('message', (data, isBinary) => {
     if (!isBinary || data.length < 1) return;
     const op = data[0];
@@ -142,24 +182,39 @@ function onAgent(ws) {
     const id = data.readUInt32BE(1);
     const v = viewers.get(id);
     if (op === OP_MSG) { if (v && v.readyState === 1) { const isText = data[5] === 1; v.send(data.slice(6), { binary: !isText }); } }
-    else if (op === OP_CLOSE) { if (v) { try { v.close(); } catch (_) {} viewers.delete(id); } }
+    else if (op === OP_CLOSE) { if (v) { try { v.close(); } catch (_) {} } } // local stream died: let the browser reconnect for a fresh one
   });
-  ws.on('close', () => { if (agentWs === ws) agentWs = null; console.log('[relay] agent disconnected'); for (const v of viewers.values()) { try { v.close(); } catch (_) {} } viewers.clear(); });
+  ws.on('close', () => {
+    if (agentWs === ws) agentWs = null;
+    console.log('[relay] agent disconnected; keeping', viewers.size, 'viewer(s) waiting');
+    broadcastStatus();   // browsers switch to "PC offline", but stay connected
+  });
   ws.on('error', () => {});
 }
 
 function sendToAgent(buf) { if (agentWs && agentWs.readyState === 1) agentWs.send(buf); }
 
 function onViewer(ws) {
-  ws.binaryType = 'nodebuffer';
-  if (!agentWs) { try { ws.close(); } catch (_) {} return; }  // no PC connected
+  ws.binaryType = 'nodebuffer'; ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
   const id = nextViewerId++; if (nextViewerId > 0xffffffff) nextViewerId = 1;
   viewers.set(id, ws);
-  console.log('[relay] viewer', id, 'connected; total', viewers.size);
-  sendToAgent(frameOpen(id));
-  ws.on('message', (data, isBinary) => { sendToAgent(frameMsg(id, !isBinary, isBinary ? data : Buffer.from(data))); });
-  ws.on('close', () => { viewers.delete(id); sendToAgent(frameClose(id)); console.log('[relay] viewer', id, 'closed'); });
+  console.log('[relay] viewer', id, 'connected; total', viewers.size, '; agent', agentOnline());
+  sendStatus(ws);                                 // tell the browser if the PC is online
+  if (agentOnline()) sendToAgent(frameOpen(id));  // start a local stream now
+  ws.on('message', (data, isBinary) => { if (agentOnline()) sendToAgent(frameMsg(id, !isBinary, isBinary ? data : Buffer.from(data))); });
+  ws.on('close', () => { viewers.delete(id); if (agentOnline()) sendToAgent(frameClose(id)); console.log('[relay] viewer', id, 'closed'); });
   ws.on('error', () => {});
 }
+
+// ---- keepalive: drop dead sockets so nothing hangs half-open --------------
+setInterval(() => {
+  const all = [...viewers.values()];
+  if (agentWs) all.push(agentWs);
+  for (const ws of all) {
+    if (ws.isAlive === false) { try { ws.terminate(); } catch (_) {} continue; }
+    ws.isAlive = false; try { ws.ping(); } catch (_) {}
+  }
+}, 30000);
 
 server.listen(PORT, () => console.log(`[relay] listening on :${PORT}`));
