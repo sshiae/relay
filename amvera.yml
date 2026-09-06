@@ -1,0 +1,10 @@
+meta:
+  environment: docker
+  toolchain:
+    name: docker
+
+run:
+  # Постоянный том (не используется релеем, но пусть будет — как в других проектах).
+  persistenceMount: /data
+  # Порт, на который Amvera проксирует внешний HTTPS. Релей слушает его (PORT=80).
+  containerPort: 80
