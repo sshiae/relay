@@ -45,7 +45,9 @@ if (!PASSWORD || !AGENT_KEY) {
 }
 
 // ---- mux opcodes ----------------------------------------------------------
-const OP_OPEN = 1, OP_CLOSE = 2, OP_MSG = 3, OP_CONFIG = 4;
+// 1..4 bridge viewers; 5 pushes the live viewer roster to the agent; 6/7 let
+// the agent (via its local widget) disconnect one viewer or everyone.
+const OP_OPEN = 1, OP_CLOSE = 2, OP_MSG = 3, OP_CONFIG = 4, OP_ROSTER = 5, OP_KICK = 6, OP_KICKALL = 7;
 function frameOpen(id) { const b = Buffer.allocUnsafe(5); b[0] = OP_OPEN; b.writeUInt32BE(id >>> 0, 1); return b; }
 function frameClose(id) { const b = Buffer.allocUnsafe(5); b[0] = OP_CLOSE; b.writeUInt32BE(id >>> 0, 1); return b; }
 function frameMsg(id, isText, payload) {
@@ -53,6 +55,7 @@ function frameMsg(id, isText, payload) {
   head[0] = OP_MSG; head.writeUInt32BE(id >>> 0, 1); head[5] = isText ? 1 : 0;
   return Buffer.concat([head, payload]);
 }
+function frameRoster(json) { return Buffer.concat([Buffer.from([OP_ROSTER]), Buffer.from(json, 'utf8')]); }
 
 // ---- state ----------------------------------------------------------------
 let agentWs = null;                 // the single connected agent
@@ -65,6 +68,11 @@ let nextViewerId = 1;
 // every login and left open browsers stuck reconnecting into 401s forever.
 // A signed token keyed off the (unchanged) env secrets survives restarts.
 const SESSION_SECRET = crypto.createHash('sha256').update('sess|' + PASSWORD + '|' + AGENT_KEY).digest();
+// Revocation (in-memory; resets if the relay restarts — fine for personal use):
+//   revokedSids  — specific cookies kicked one-by-one from the widget
+//   revokeBefore — "log everyone out": reject sessions issued before this time
+const revokedSids = new Set();
+let revokeBefore = 0;
 function b64u(buf) { return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 function fromB64u(s) { return Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'), 'base64'); }
 function newSession() {
@@ -74,13 +82,17 @@ function newSession() {
 }
 function validSession(t) {
   if (!t || typeof t !== 'string') return false;
+  if (revokedSids.has(t)) return false;
   const dot = t.indexOf('.'); if (dot < 1) return false;
   let payload, sig;
   try { payload = fromB64u(t.slice(0, dot)); sig = fromB64u(t.slice(dot + 1)); } catch (_) { return false; }
   const want = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest();
   if (sig.length !== want.length || !crypto.timingSafeEqual(sig, want)) return false;
   const exp = parseInt(payload.toString('utf8'), 10);
-  return !!exp && Date.now() <= exp;
+  if (!exp || Date.now() > exp) return false;
+  // "Logged everyone out": this cookie was issued (exp - TTL) before the cutoff.
+  if (revokeBefore && (exp - SESSION_TTL_MS) < revokeBefore) return false;
+  return true;
 }
 function parseCookies(req) {
   const out = {}; const h = req.headers.cookie; if (!h) return out;
@@ -109,6 +121,17 @@ function agentOnline() { return !!(agentWs && agentWs.readyState === 1); }
 function statusMsg() { return JSON.stringify({ t: 'relay', agent: agentOnline() }); }
 function sendStatus(ws) { try { if (ws.readyState === 1) ws.send(statusMsg()); } catch (_) {} }
 function broadcastStatus() { const s = statusMsg(); for (const v of viewers.values()) { try { if (v.readyState === 1) v.send(s); } catch (_) {} } }
+
+// ---- viewer roster (pushed to the agent for the local session widget) ------
+function rosterArray() {
+  const out = [];
+  for (const [id, v] of viewers.entries()) out.push({ id, ip: v._ip || '', ua: v._ua || '', since: v._since || 0 });
+  return out;
+}
+function pushRoster() {
+  if (!agentOnline()) return;
+  try { agentWs.send(frameRoster(JSON.stringify(rosterArray()))); } catch (_) {}
+}
 
 // ---- HTTP -----------------------------------------------------------------
 const server = http.createServer((req, res) => {
@@ -159,8 +182,9 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
   if (u.pathname === '/ws') {
-    if (!validSession(parseCookies(req).sid)) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
-    wss.handleUpgrade(req, socket, head, (ws) => onViewer(ws));
+    const sid = parseCookies(req).sid;
+    if (!validSession(sid)) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
+    wss.handleUpgrade(req, socket, head, (ws) => onViewer(ws, req, sid));
     return;
   }
   socket.destroy();
@@ -175,14 +199,24 @@ function onAgent(ws) {
   // tell those browsers the PC is back so they re-send settings and resume.
   for (const id of viewers.keys()) ws.send(frameOpen(id));
   broadcastStatus();
+  pushRoster();
   ws.on('message', (data, isBinary) => {
     if (!isBinary || data.length < 1) return;
     const op = data[0];
     if (op === OP_CONFIG) { cachedConfig = data.slice(5).toString('utf8') || cachedConfig; return; }
+    if (op === OP_KICKALL) {                       // widget: "log everyone out"
+      revokeBefore = Date.now();
+      for (const v of viewers.values()) { try { v.close(); } catch (_) {} }
+      console.log('[relay] KICKALL: all sessions revoked by agent');
+      return;
+    }
     const id = data.readUInt32BE(1);
     const v = viewers.get(id);
     if (op === OP_MSG) { if (v && v.readyState === 1) { const isText = data[5] === 1; v.send(data.slice(6), { binary: !isText }); } }
     else if (op === OP_CLOSE) { if (v) { try { v.close(); } catch (_) {} } } // local stream died: let the browser reconnect for a fresh one
+    else if (op === OP_KICK) {                     // widget: disconnect one viewer + revoke its cookie
+      if (v) { if (v._sid) revokedSids.add(v._sid); try { v.close(); } catch (_) {} console.log('[relay] KICK viewer', id); }
+    }
   });
   ws.on('close', () => {
     if (agentWs === ws) agentWs = null;
@@ -194,16 +228,21 @@ function onAgent(ws) {
 
 function sendToAgent(buf) { if (agentWs && agentWs.readyState === 1) agentWs.send(buf); }
 
-function onViewer(ws) {
+function onViewer(ws, req, sid) {
   ws.binaryType = 'nodebuffer'; ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
   const id = nextViewerId++; if (nextViewerId > 0xffffffff) nextViewerId = 1;
+  ws._id = id; ws._sid = sid || '';
+  ws._ip = ((req && (req.headers['x-forwarded-for'] || req.socket.remoteAddress)) || '').toString().split(',')[0].trim();
+  ws._ua = ((req && req.headers['user-agent']) || '').toString().slice(0, 200);
+  ws._since = Date.now();
   viewers.set(id, ws);
   console.log('[relay] viewer', id, 'connected; total', viewers.size, '; agent', agentOnline());
   sendStatus(ws);                                 // tell the browser if the PC is online
   if (agentOnline()) sendToAgent(frameOpen(id));  // start a local stream now
+  pushRoster();
   ws.on('message', (data, isBinary) => { if (agentOnline()) sendToAgent(frameMsg(id, !isBinary, isBinary ? data : Buffer.from(data))); });
-  ws.on('close', () => { viewers.delete(id); if (agentOnline()) sendToAgent(frameClose(id)); console.log('[relay] viewer', id, 'closed'); });
+  ws.on('close', () => { viewers.delete(id); if (agentOnline()) sendToAgent(frameClose(id)); pushRoster(); console.log('[relay] viewer', id, 'closed'); });
   ws.on('error', () => {});
 }
 

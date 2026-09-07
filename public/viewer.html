@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Мой рабочий стол</title>
+  <title>Личный кабинет</title>
   <style>
     :root {
       color-scheme: dark;
@@ -132,6 +132,15 @@
       padding: 9px 16px; color: var(--text); font-size: 13px; opacity: 0; pointer-events: none;
       transition: opacity .3s, transform .3s; }
     #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    /* ---- Privacy cover (shown whenever the window is not focused) ----------
+       Fully opaque, tops everything, and says nothing that hints at what this
+       page is. Anyone who glances at the screen just sees a generic reconnect. */
+    #privacy { position: fixed; inset: 0; z-index: 80; display: none;
+      flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+      background: #05080b; color: var(--muted); }
+    #privacy.show { display: flex; }
+    #privacy .pTxt { font-size: 15px; color: var(--muted); }
   </style>
 </head>
 <body>
@@ -185,8 +194,8 @@
       <div class="sect">
         <p class="sTitle">Режим</p>
         <div class="row">
-          <label>⚡ Турбо (H.264)<br><span class="val" style="font-size:12px">минимальная задержка и трафик</span></label>
-          <div class="tog on" id="turboBtn" role="switch"></div>
+          <label for="codecSel">⚡ Кодек<br><span class="val" style="font-size:12px">качество и скорость</span></label>
+          <select id="codecSel" style="width:150px"></select>
         </div>
         <div class="row">
           <label>🖱 Локальный курсор<br><span class="val" style="font-size:12px">мгновенный, без задержки</span></label>
@@ -196,7 +205,7 @@
           <label>⌨ Захват клавиатуры<br><span class="val" style="font-size:12px">клавиши идут на компьютер</span></label>
           <div class="tog on" id="kbdBtn" role="switch"></div>
         </div>
-        <button class="fullBtn" id="fsBtn">⛶ Полный экран</button>
+        <button class="fullBtn" id="fsBtn">⛶ Полный экран <span class="val" style="font-size:12px">(F12)</span></button>
       </div>
 
       <div class="sect">
@@ -231,6 +240,12 @@
   </div>
 
   <div id="toast"></div>
+
+  <!-- Privacy cover: replaces everything the moment the window loses focus -->
+  <div id="privacy">
+    <div class="spinner"></div>
+    <div class="pTxt">Переподключение…</div>
+  </div>
 
   <script>
   (function () {
@@ -270,6 +285,7 @@
     const overlay = $('overlay'), ovSpinner = $('ovSpinner'), ovIcon = $('ovIcon'),
           ovTitle = $('ovTitle'), ovText = $('ovText');
     const toast = $('toast');
+    const privacyEl = $('privacy');
 
     // ---- State --------------------------------------------------------------
     let ws = null, wsOpened = false;
@@ -284,10 +300,16 @@
     let instantCursor = true;
     let panelOpen = false;
     let lastFrameAt = 0;
+    let privacy = false;         // window not focused -> hide everything remote
+    let pendingClip = null;      // clipboard text waiting for focus to be written
     const pressed = new Set();
 
-    const CAN_H264 = (typeof window.VideoDecoder === 'function') && (typeof window.EncodedVideoChunk === 'function');
-    let codecMode = CAN_H264 ? 'h264' : 'mjpeg';
+    const CAN_WC = (typeof window.VideoDecoder === 'function') && (typeof window.EncodedVideoChunk === 'function');
+    let canH264 = CAN_WC, canHEVC = false;   // finalized by probeCodecs()
+    const HEVC_CANDIDATES = ['hev1.1.6.L153.B0', 'hev1.1.6.L120.90', 'hev1.1.6.L123.B0', 'hvc1.1.6.L153.B0'];
+    let HEVC_CODEC = HEVC_CANDIDATES[0];     // the first candidate the browser accepts
+    let codecMode = 'mjpeg';                 // requested codec; finalized after probe
+    let shownCodec = 'MJPEG';                // codec actually being decoded (for the HUD)
     let vdec = null, vdecCodec = null, gotKey = false, tsCounter = 0;
 
     const settings = { monitor: 0, quality: 7, fps: 30, maxWidth: 1280 };
@@ -303,11 +325,11 @@
       if (uiState === 'streaming') {
         cls = 'ok';
         const ping = lastRtt === null ? '—' : lastRtt + 'мс';
-        txt = 'Онлайн · ' + (codecMode === 'h264' ? 'H.264' : 'MJPEG') + ' · ' + ping;
+        txt = 'Онлайн · ' + shownCodec + ' · ' + ping;
         hud.classList.add('dim');
       } else {
         hud.classList.remove('dim');
-        if (uiState === 'pc_offline') { cls = 'bad'; txt = 'Компьютер офлайн'; }
+        if (uiState === 'pc_offline') { cls = 'bad'; txt = 'Не в сети'; }
         else if (uiState === 'lost') { cls = 'bad'; txt = 'Нет связи'; }
         else if (uiState === 'auth') { cls = 'bad'; txt = 'Сессия истекла'; }
       }
@@ -321,11 +343,11 @@
       ovSpinner.hidden = !spin; ovIcon.hidden = spin;
       if (uiState === 'connecting') {
         ovTitle.textContent = 'Подключение…';
-        ovText.textContent = 'Устанавливаем связь с компьютером.';
+        ovText.textContent = 'Устанавливаем соединение.';
       } else if (uiState === 'pc_offline') {
         ovIcon.textContent = '💤';
-        ovTitle.textContent = 'Компьютер офлайн';
-        ovText.textContent = 'Ждём, пока компьютер выйдет в сеть. Как только он включится — подключение произойдёт автоматически.';
+        ovTitle.textContent = 'Нет соединения';
+        ovText.textContent = 'Соединение пока недоступно. Как только оно восстановится — продолжим автоматически.';
       } else if (uiState === 'lost') {
         ovTitle.textContent = 'Соединение потеряно';
         ovText.textContent = 'Переподключаемся автоматически…';
@@ -342,7 +364,7 @@
       clearTimeout(stuckTimer);
       stuckTimer = setTimeout(function () {
         if (uiState === 'connecting' && agentUp === true && !streaming) {
-          ovText.textContent = 'Компьютер на связи, но изображения нет. Проверьте, что он включён и разблокирован (не на экране блокировки).';
+          ovText.textContent = 'Соединение есть, но нет изображения. Убедитесь, что устройство включено и разблокировано.';
         }
       }, 8000);
     }
@@ -379,6 +401,7 @@
           let m; try { m = JSON.parse(e.data); } catch (_) { return; }
           if (m.t === 'pong') { lastRtt = Math.round(performance.now() - m.ts); }
           else if (m.t === 'relay') { onAgentStatus(!!m.agent); }
+          else if (m.t === 'clip') { writeClipboard(m.text); }
           return;
         }
         bytesWindow += e.data.byteLength || 0;
@@ -386,7 +409,8 @@
         const tag = u8[0];
         const payload = u8.subarray(1);
         if (tag === 0x4A) { pending = payload; if (!decoding) pump(); }
-        else if (tag === 0x4B || tag === 0x44) handleH264(payload, tag === 0x4B);
+        else if (tag === 0x4B || tag === 0x44) handleEncoded(payload, tag === 0x4B, 'avc');
+        else if (tag === 0x45 || tag === 0x46) handleEncoded(payload, tag === 0x45, 'hevc');
       };
 
       ws.onclose = function () {
@@ -448,6 +472,54 @@
     }
     function doLogout() { manualClose = true; try { if (ws) ws.close(); } catch (_) {} location.href = '/logout'; }
 
+    // ---- Clipboard: text copied on the PC lands in THIS device's clipboard --
+    function writeClipboard(text) {
+      if (typeof text !== 'string' || !text) return;
+      if (!navigator.clipboard || !navigator.clipboard.writeText) { pendingClip = null; return; }
+      // writeText only succeeds while the document is focused; otherwise stash
+      // it and flush on the next focus.
+      if (!document.hasFocus()) { pendingClip = text; return; }
+      navigator.clipboard.writeText(text)
+        .then(function () { pendingClip = null; showToast('Скопировано'); })
+        .catch(function () { pendingClip = text; });
+    }
+
+    // ---- Privacy: the moment this window loses focus, cover the whole page
+    // with a neutral "reconnecting" screen and drop the stream, so a person at
+    // this device never sees what's on the other machine. Regaining focus
+    // reconnects and reveals it again. Nothing on the cover hints at what this is.
+    function toggleFullscreen() {
+      try {
+        if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+        else document.exitFullscreen();
+      } catch (_) {}
+    }
+    function clearCanvas() { try { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, canvas.width, canvas.height); } catch (_) {} }
+    function enterPrivacy() {
+      releaseAll();
+      if (privacy) return;
+      privacy = true;
+      if (panelOpen) closeMenu();
+      manualClose = true;
+      streaming = false;
+      clearTimeout(reconnectTimer); reconnectTimer = null;
+      try { if (ws) { ws.onclose = null; ws.close(); } } catch (_) {}
+      clearCanvas();
+      hud.hidden = true;
+      overlay.classList.remove('show');
+      privacyEl.classList.add('show');
+    }
+    function exitPrivacy() {
+      if (!privacy) return;
+      privacy = false;
+      privacyEl.classList.remove('show');
+      hud.hidden = false;
+      backoff = 1000; agentUp = null; streaming = false;
+      setState('connecting');
+      connect();            // connect() clears manualClose
+      if (pendingClip) writeClipboard(pendingClip);
+    }
+
     function send(obj) { if (wsReady()) ws.send(JSON.stringify(obj)); }
     function pushSettings() {
       resetH264(); pending = null;
@@ -499,15 +571,17 @@
         vdecCodec = codecString;
       } catch (e) { console.warn('configure failed:', e && e.message); fallbackToMjpeg(); }
     }
-    function handleH264(payload, isKey) {
-      if (codecMode !== 'h264') return;
+    // Decode whatever the server sends, chosen by the frame tag — so if the PC
+    // silently falls back from H.265 to H.264, the picture keeps working.
+    function handleEncoded(payload, isKey, fam) {
       try {
         if (isKey) {
-          const cs = spsCodec(payload);
+          const cs = fam === 'hevc' ? HEVC_CODEC : spsCodec(payload);
           if (cs && cs !== vdecCodec) makeDecoder(cs);
         }
         if (!vdec) return;
         if (!gotKey) { if (!isKey) return; gotKey = true; }
+        shownCodec = fam === 'hevc' ? 'H.265' : 'H.264';
         vdec.decode(new EncodedVideoChunk({
           type: isKey ? 'key' : 'delta',
           timestamp: (tsCounter += 1000),
@@ -520,7 +594,7 @@
       console.warn('falling back to MJPEG');
       codecMode = 'mjpeg';
       resetH264();
-      turboBtn.classList.remove('on');
+      const cs = $('codecSel'); if (cs) cs.value = 'mjpeg';
       pushSettings();
     }
 
@@ -537,6 +611,7 @@
         }
         ctx.drawImage(bmp, 0, 0);
         if (bmp.close) bmp.close();
+        shownCodec = 'MJPEG';
         framesWindow++; markStreaming();
         decoding = false;
         if (pending) pump();
@@ -601,6 +676,9 @@
     // ---- Keyboard -----------------------------------------------------------
     function isField(el) { return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable); }
     window.addEventListener('keydown', function (e) {
+      // F12 = fullscreen toggle for THIS page. Intercept it so it neither opens
+      // the local browser devtools nor gets forwarded to the other machine.
+      if (e.code === 'F12') { e.preventDefault(); e.stopPropagation(); toggleFullscreen(); return; }
       if (e.code === 'Escape' && panelOpen) { e.preventDefault(); closeMenu(); return; }
       if (panelOpen || !controlEnabled || isField(document.activeElement)) return;
       const vk = VK[e.code];
@@ -611,6 +689,7 @@
       send({ t: 'kd', vk, e: ext });
     });
     window.addEventListener('keyup', function (e) {
+      if (e.code === 'F12') { e.preventDefault(); return; }   // handled on keydown
       if (panelOpen || !controlEnabled || isField(document.activeElement)) return;
       const vk = VK[e.code];
       if (vk === undefined) return;
@@ -623,8 +702,9 @@
       pressed.forEach(function (code) { send({ t: 'ku', vk: VK[code], e: EXTENDED.has(code) ? 1 : 0 }); });
       pressed.clear();
     }
-    window.addEventListener('blur', releaseAll);
-    document.addEventListener('visibilitychange', function () { if (document.hidden) releaseAll(); });
+    window.addEventListener('blur', enterPrivacy);
+    window.addEventListener('focus', exitPrivacy);
+    document.addEventListener('visibilitychange', function () { if (document.hidden) enterPrivacy(); else exitPrivacy(); });
 
     // ---- Menu (drawer) ------------------------------------------------------
     function openMenu() { panelOpen = true; panel.classList.add('show'); scrim.classList.add('show'); releaseAll(); }
@@ -637,20 +717,43 @@
     // ---- Controls wiring ----------------------------------------------------
     const monitorSel = $('monitor'), qualityEl = $('quality'), fpsEl = $('fps'), maxWidthEl = $('maxWidth');
     const qualityVal = $('qualityVal'), fpsVal = $('fpsVal');
-    const turboBtn = $('turboBtn'), curBtn = $('curBtn'), kbdBtn = $('kbdBtn'), fsBtn = $('fsBtn');
+    const codecSel = $('codecSel'), curBtn = $('curBtn'), kbdBtn = $('kbdBtn'), fsBtn = $('fsBtn');
     const sendText = $('sendText'), sendBtn = $('sendBtn');
 
-    if (!CAN_H264) {
-      codecMode = 'mjpeg';
-      turboBtn.classList.remove('on'); turboBtn.classList.add('disabled');
-      turboBtn.title = 'Браузер без WebCodecs — доступен только MJPEG';
-    } else { turboBtn.classList.toggle('on', codecMode === 'h264'); }
+    // Probe which hardware-decodable codecs this browser/device supports, then
+    // build the codec menu (best first) and pick a sensible default. H.265 gives
+    // the best quality per bit; H.264 is the universal turbo; MJPEG always works.
+    function buildCodecMenu() {
+      const opts = [];
+      if (canHEVC) opts.push(['h265', 'H.265 (макс.)']);
+      if (canH264) opts.push(['h264', 'H.264 (турбо)']);
+      opts.push(['mjpeg', 'MJPEG (совмест.)']);
+      codecSel.innerHTML = '';
+      opts.forEach(function (o) {
+        const el = document.createElement('option'); el.value = o[0]; el.textContent = o[1];
+        codecSel.appendChild(el);
+      });
+      codecMode = canHEVC ? 'h265' : (canH264 ? 'h264' : 'mjpeg');
+      codecSel.value = codecMode;
+    }
+    async function probeCodecs() {
+      if (CAN_WC) {
+        try { const r = await VideoDecoder.isConfigSupported({ codec: 'avc1.42E01E' }); canH264 = !!(r && r.supported); } catch (_) { canH264 = false; }
+        for (let i = 0; i < HEVC_CANDIDATES.length; i++) {
+          try {
+            const r = await VideoDecoder.isConfigSupported({ codec: HEVC_CANDIDATES[i] });
+            if (r && r.supported) { HEVC_CODEC = HEVC_CANDIDATES[i]; canHEVC = true; break; }
+          } catch (_) { /* try next */ }
+        }
+      } else { canH264 = false; canHEVC = false; }
+      buildCodecMenu();
+      pushSettings();   // re-send now that the real default codec is known
+    }
 
-    turboBtn.addEventListener('click', function () {
-      if (!CAN_H264) { showToast('Турбо недоступно в этом браузере'); return; }
-      codecMode = (codecMode === 'h264') ? 'mjpeg' : 'h264';
-      turboBtn.classList.toggle('on', codecMode === 'h264');
+    codecSel.addEventListener('change', function () {
+      codecMode = codecSel.value;
       resetH264(); pending = null; pushSettings();
+      showToast(codecMode === 'h265' ? 'H.265 — макс. качество' : codecMode === 'h264' ? 'H.264 — турбо' : 'MJPEG — совместимость');
     });
     curBtn.addEventListener('click', function () {
       instantCursor = !instantCursor;
@@ -663,10 +766,7 @@
       if (!controlEnabled) releaseAll();
       showToast(controlEnabled ? 'Клавиатура включена' : 'Клавиатура выключена');
     });
-    fsBtn.addEventListener('click', function () {
-      if (!document.fullscreenElement) document.documentElement.requestFullscreen();
-      else document.exitFullscreen();
-    });
+    fsBtn.addEventListener('click', toggleFullscreen);
 
     monitorSel.addEventListener('change', function () {
       settings.monitor = monitorSel.value === 'all' ? 'all' : parseInt(monitorSel.value, 10);
@@ -717,7 +817,7 @@
     }, 1000);
 
     // ---- Go -----------------------------------------------------------------
-    applyCursor(); fit(); renderOverlay(); renderHud(); connect();
+    applyCursor(); fit(); renderOverlay(); renderHud(); probeCodecs(); connect();
   })();
   </script>
 </body>
