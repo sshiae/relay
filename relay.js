@@ -47,7 +47,7 @@ if (!PASSWORD || !AGENT_KEY) {
 // ---- mux opcodes ----------------------------------------------------------
 // 1..4 bridge viewers; 5 pushes the live viewer roster to the agent; 6/7 let
 // the agent (via its local widget) disconnect one viewer or everyone.
-const OP_OPEN = 1, OP_CLOSE = 2, OP_MSG = 3, OP_CONFIG = 4, OP_ROSTER = 5, OP_KICK = 6, OP_KICKALL = 7;
+const OP_OPEN = 1, OP_CLOSE = 2, OP_MSG = 3, OP_CONFIG = 4, OP_ROSTER = 5, OP_KICK = 6, OP_KICKALL = 7, OP_PAUSE = 8, OP_RESUME = 9;
 function frameOpen(id) { const b = Buffer.allocUnsafe(5); b[0] = OP_OPEN; b.writeUInt32BE(id >>> 0, 1); return b; }
 function frameClose(id) { const b = Buffer.allocUnsafe(5); b[0] = OP_CLOSE; b.writeUInt32BE(id >>> 0, 1); return b; }
 function frameMsg(id, isText, payload) {
@@ -73,6 +73,10 @@ const SESSION_SECRET = crypto.createHash('sha256').update('sess|' + PASSWORD + '
 //   revokeBefore — "log everyone out": reject sessions issued before this time
 const revokedSids = new Set();
 let revokeBefore = 0;
+// "Lock": while paused, NO ONE gets in — even the correct password is refused
+// and /ws upgrades are rejected. Toggled by the agent (OP_PAUSE/OP_RESUME); the
+// agent re-asserts it on every reconnect so it survives a relay restart.
+let paused = false;
 function b64u(buf) { return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 function fromB64u(s) { return Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'), 'base64'); }
 function newSession() {
@@ -144,6 +148,9 @@ const server = http.createServer((req, res) => {
     let body = ''; req.on('data', c => { body += c; if (body.length > 4096) req.destroy(); });
     req.on('end', () => {
       if (tooMany(ip)) { res.writeHead(429); res.end('too many attempts'); return; }
+      // Locked: refuse everyone, even with the correct password (look like a
+      // wrong password so a locked-out intruder learns nothing).
+      if (paused) { res.writeHead(302, { 'Location': '/?e=1' }); res.end(); return; }
       const params = new URLSearchParams(body);
       if (passwordOk(params.get('password'))) {
         res.writeHead(302, { 'Set-Cookie': `sid=${newSession()}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`, 'Location': '/' });
@@ -159,7 +166,7 @@ const server = http.createServer((req, res) => {
   if (u.pathname === '/status') {
     if (!authed) { res.writeHead(401, { 'Cache-Control': 'no-store' }); res.end('{"auth":false}'); return; }
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    res.end(JSON.stringify({ auth: true, agent: agentOnline() })); return;
+    res.end(JSON.stringify({ auth: true, agent: agentOnline(), paused: paused })); return;
   }
   if (u.pathname === '/config.json') {
     if (!authed) { res.writeHead(401); res.end('{}'); return; }
@@ -183,7 +190,7 @@ server.on('upgrade', (req, socket, head) => {
   }
   if (u.pathname === '/ws') {
     const sid = parseCookies(req).sid;
-    if (!validSession(sid)) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
+    if (paused || !validSession(sid)) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
     wss.handleUpgrade(req, socket, head, (ws) => onViewer(ws, req, sid));
     return;
   }
@@ -210,6 +217,13 @@ function onAgent(ws) {
       console.log('[relay] KICKALL: all sessions revoked by agent');
       return;
     }
+    if (op === OP_PAUSE) {                          // widget: LOCK — nobody gets in
+      paused = true; revokeBefore = Date.now();
+      for (const v of viewers.values()) { try { v.close(); } catch (_) {} }
+      console.log('[relay] PAUSE: connections locked by agent');
+      return;
+    }
+    if (op === OP_RESUME) { paused = false; console.log('[relay] RESUME: connections unlocked'); return; }
     const id = data.readUInt32BE(1);
     const v = viewers.get(id);
     if (op === OP_MSG) { if (v && v.readyState === 1) { const isText = data[5] === 1; v.send(data.slice(6), { binary: !isText }); } }
